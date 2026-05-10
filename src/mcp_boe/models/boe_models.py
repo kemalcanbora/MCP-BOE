@@ -465,22 +465,19 @@ class SearchParameters(BaseModel):
 # MODELOS PARA RESPUESTAS DE ERROR
 # ============================================================================
 
-class APIError(BaseModel):
+class APIError(Exception):
     """Error de la API del BOE."""
-    codigo: int = Field(..., description="Código de error HTTP")
-    mensaje: str = Field(..., description="Mensaje de error")
-    detalles: Optional[str] = Field(None, description="Detalles adicionales del error")
-    timestamp: datetime = Field(default_factory=datetime.now, description="Momento del error")
 
-    class Config:
-        json_schema_extra = {
-            "example": {
-                "codigo": 404,
-                "mensaje": "La información solicitada no existe",
-                "detalles": "El identificador BOE-A-2025-99999 no se encontró",
-                "timestamp": "2025-01-23T10:30:00Z"
-            }
-        }
+    def __init__(
+        self,
+        codigo: int,
+        mensaje: str,
+        detalles: Optional[str] = None,
+    ) -> None:
+        self.codigo = codigo
+        self.mensaje = mensaje
+        self.detalles = detalles
+        super().__init__(mensaje)
 
 
 # ============================================================================
@@ -529,6 +526,48 @@ def format_date_for_api(date_input: Union[str, datetime]) -> str:
 
 
 # ============================================================================
+# MODELOS PARA NUEVAS HERRAMIENTAS AVANZADAS
+# ============================================================================
+
+class LawVersionChange(BaseModel):
+    """Cambio detectado entre dos versiones de un bloque de una norma."""
+    unit_type: str = Field(..., description="Tipo de unidad (articulo, capitulo, titulo)")
+    unit_id: str = Field(..., description="Identificador del bloque (ej: 'a14')")
+    unit_title: str = Field(..., description="Título del bloque")
+    change_type: str = Field(..., description="Tipo de cambio: added, modified, removed")
+    old_text: Optional[str] = Field(None, description="Texto en la fecha inicial (si aplica)")
+    new_text: Optional[str] = Field(None, description="Texto en la fecha final (si aplica)")
+
+    @validator('change_type')
+    def validate_change_type(cls, v):
+        if v not in ('added', 'modified', 'removed'):
+            raise ValueError(f"change_type inválido: {v}")
+        return v
+
+
+class ArticleMatch(BaseModel):
+    """Resultado de búsqueda de artículos dentro de una norma."""
+    article_id: str = Field(..., description="ID del bloque (ej: 'a14')")
+    title: str = Field(..., description="Título del artículo")
+    snippet: str = Field(..., description="Fragmento relevante del texto")
+    full_text: Optional[str] = Field(None, description="Texto completo del artículo (opcional)")
+
+
+class PaginatedLawText(BaseModel):
+    """Fragmento paginado del texto de una norma."""
+    chunk_text: str = Field(..., description="Texto del fragmento actual")
+    articles_included: List[str] = Field(..., description="IDs de los bloques incluidos en el fragmento")
+    next_cursor: Optional[str] = Field(None, description="Cursor para la siguiente página (None si es la última)")
+
+
+class FilterSuggestion(BaseModel):
+    """Sugerencia de filtro de tablas auxiliares para una consulta."""
+    type: str = Field(..., description="Tipo de filtro: department, topic, range, scope, state")
+    code: str = Field(..., description="Código del filtro")
+    label: str = Field(..., description="Etiqueta descriptiva")
+
+
+# ============================================================================
 # EXPORTS
 # ============================================================================
 
@@ -567,6 +606,12 @@ __all__ = [
     'SearchQuery',
     'SearchParameters',
     
+    # Nuevos modelos para herramientas avanzadas
+    'LawVersionChange',
+    'ArticleMatch',
+    'PaginatedLawText',
+    'FilterSuggestion',
+
     # Utilidades
     'validate_boe_identifier',
     'validate_date_format',

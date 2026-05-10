@@ -5,7 +5,15 @@
       "Bash(uv --version)",
       "Bash(/Users/computingvictor/miniforge3/bin/uv python:*)",
       "Bash(/Users/computingvictor/miniforge3/bin/uv run:*)",
-      "Bash(curl -s \"https://www.boe.es/datosabiertos/api/legislacion-consolidada/id/BOE-A-2015-10566/metadatos\" -H \"Accept: application/json\")"
+      "Bash(curl -s \"https://www.boe.es/datosabiertos/api/legislacion-consolidada/id/BOE-A-2015-10566/metadatos\" -H \"Accept: application/json\")",
+      "Bash(Get-ChildItem -Path \"c:\\\\workspace-github\\\\MCP-BOE\" -Force)",
+      "Bash(Select-Object Name, Mode)",
+      "Bash(Get-ChildItem -Recurse -Directory -Name)",
+      "Bash(New-Item -ItemType Directory -Force -Path \"c:\\\\workspace-github\\\\MCP-BOE\\\\tests\")",
+      "Bash(Out-Null)",
+      "Bash(uv run *)",
+      "PowerShell(uv --version; \\(Get-Command uv\\).Source)",
+      "PowerShell($env:APPDATA)"
     ],
     "deny": [],
     "ask": []

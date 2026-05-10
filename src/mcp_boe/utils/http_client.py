@@ -179,7 +179,6 @@ class BOEHTTPClient:
                     codigo=status_code,
                     mensaje=f"Error HTTP {status_code}",
                     detalles=str(e),
-                    timestamp=datetime.now()
                 )
         
         # Si llegamos aquí, fallaron todos los reintentos
@@ -187,7 +186,6 @@ class BOEHTTPClient:
             codigo=500,
             mensaje="Error de conexión después de varios reintentos",
             detalles=str(last_exception),
-            timestamp=datetime.now()
         )
 
     async def get(
@@ -253,7 +251,6 @@ class BOEHTTPClient:
                     codigo=500,
                     mensaje="Error parseando respuesta JSON de la API",
                     detalles=str(e),
-                    timestamp=datetime.now()
                 )
 
         elif accept_format == "application/xml":
@@ -266,14 +263,12 @@ class BOEHTTPClient:
                     codigo=500,
                     mensaje="Error parseando respuesta XML de la API",
                     detalles=str(e),
-                    timestamp=datetime.now()
                 )
 
         else:
             raise APIError(
                 codigo=400,
                 mensaje=f"Formato no soportado: {accept_format}",
-                timestamp=datetime.now()
             )
 
     def _xml_to_dict(self, element) -> Dict[str, Any]:
@@ -380,11 +375,78 @@ class BOEHTTPClient:
             Datos de la norma
         """
         endpoint = f"{self.ENDPOINTS['legislation']}/id/{law_id}"
-        
+
         if section:
             endpoint += f"/{section}"
-            
-        return await self.get(endpoint=endpoint)
+
+        # /texto solo funciona con XML; el resto responde JSON
+        if section == 'texto':
+            return await self._get_law_texto(endpoint)
+
+        response = await self.get(endpoint=endpoint)
+
+        # La API devuelve data como lista con un elemento; normalizamos a dict
+        # para que todos los tools puedan hacer response['data'].get(...) sin cambios.
+        if isinstance(response.get('data'), list) and response['data']:
+            response = {**response, 'data': response['data'][0]}
+
+        return response
+
+    async def _get_law_texto(self, endpoint: str) -> Dict[str, Any]:
+        """Obtiene y normaliza el texto de una norma desde XML.
+
+        El endpoint /texto solo acepta application/xml. Esta función descarga
+        el XML, lo parsea con lxml y lo normaliza al mismo formato dict que
+        usan los tools (data.texto → lista de bloques con id, tipo, titulo,
+        versiones[]{id_norma, fecha_vigencia, contenido_html}).
+        """
+        from lxml import etree
+
+        url = f"{self.BASE_URL}{endpoint}"
+        response = await self._make_request(
+            method="GET",
+            url=url,
+            headers={"Accept": "application/xml"},
+        )
+
+        try:
+            root = etree.fromstring(response.text.encode("utf-8"))
+        except etree.XMLSyntaxError as e:
+            raise APIError(codigo=500, mensaje=f"Error parseando XML de /texto: {e}")
+
+        bloques = []
+        for bloque_el in root.findall(".//texto/bloque"):
+            bloque_id = bloque_el.get("id", "")
+            bloque_tipo = bloque_el.get("tipo", "")
+
+            titulo_el = bloque_el.find("titulo")
+            titulo = titulo_el.text.strip() if titulo_el is not None and titulo_el.text else ""
+
+            versiones = []
+            for ver_el in bloque_el.findall("version"):
+                # Reconstruir contenido HTML concatenando todos los hijos
+                partes_html = []
+                for child in ver_el:
+                    try:
+                        partes_html.append(etree.tostring(child, encoding="unicode", with_tail=True))
+                    except Exception:
+                        pass
+                contenido_html = "".join(partes_html)
+                versiones.append({
+                    "id_norma": ver_el.get("id_norma", ""),
+                    "fecha_publicacion": ver_el.get("fecha_publicacion", ""),
+                    "fecha_vigencia": ver_el.get("fecha_vigencia", ""),
+                    "contenido_html": contenido_html,
+                })
+
+            bloques.append({
+                "id": bloque_id,
+                "tipo": bloque_tipo,
+                "titulo": titulo,
+                "versiones": versiones,
+            })
+
+        return {"data": {"texto": bloques}}
 
     async def get_boe_summary(
         self,
