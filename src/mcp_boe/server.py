@@ -20,6 +20,7 @@ from .tools.legislation import LegislationTools
 from .tools.summaries import SummaryTools
 from .tools.auxiliary import AuxiliaryTools
 from .tools.documents import DocumentTools
+from .tools.analysis import AnalysisTools
 
 # Configurar logging
 logging.basicConfig(level=logging.INFO)
@@ -36,6 +37,7 @@ class BOEMCPServer:
         self.legislation_tools = None
         self.summary_tools = None
         self.auxiliary_tools = None
+        self.analysis_tools = None
         self.document_tools = DocumentTools()
         self._setup_handlers()
 
@@ -55,6 +57,9 @@ class BOEMCPServer:
             
             if self.auxiliary_tools:
                 tools.extend(self.auxiliary_tools.get_tools())
+
+            if self.analysis_tools:
+                tools.extend(self.analysis_tools.get_tools())
 
             tools.extend(self.document_tools.get_tools())
 
@@ -92,6 +97,24 @@ class BOEMCPServer:
                 "get_consolidation_states_table":  lambda a: self.auxiliary_tools.get_consolidation_states_table(a),
                 "search_auxiliary_data":           lambda a: self.auxiliary_tools.search_auxiliary_data(a),
                 "get_code_description":            lambda a: self.auxiliary_tools.get_code_description(a),
+                # Legislación avanzada (grupo A)
+                "compare_law_versions":            lambda a: self.legislation_tools.compare_law_versions(a),
+                "search_law_articles":             lambda a: self.legislation_tools.search_law_articles(a),
+                "get_law_metadata":                lambda a: self.legislation_tools.get_law_metadata(a),
+                "list_related_laws":               lambda a: self.legislation_tools.list_related_laws(a),
+                # Sumarios avanzados (grupo B)
+                "get_boe_summary_range":           lambda a: self.summary_tools.get_boe_summary_range(a),
+                "watch_boe_changes":               lambda a: self.summary_tools.watch_boe_changes(a),
+                "group_summary_by_department":     lambda a: self.summary_tools.group_summary_by_department(a),
+                # Tablas auxiliares avanzadas (grupo C)
+                "search_departments_advanced":     lambda a: self.auxiliary_tools.search_departments_advanced(a),
+                "list_topics_for_law":             lambda a: self.auxiliary_tools.list_topics_for_law(a),
+                "suggest_auxiliary_filters":       lambda a: self.auxiliary_tools.suggest_auxiliary_filters(a),
+                # Calidad de vida (grupo D)
+                "summarize_law_sections":          lambda a: self.analysis_tools.summarize_law_sections(a),
+                "paginate_law_text":               lambda a: self.analysis_tools.paginate_law_text(a),
+                "explain_law_structure":           lambda a: self.analysis_tools.explain_law_structure(a),
+                "normalize_boe_reference":         lambda a: self.analysis_tools.normalize_boe_reference(a),
                 # Documentos PDF
                 "read_boe_pdf":                    lambda a: self.document_tools.read_boe_pdf(a),
             }
@@ -420,7 +443,8 @@ Obtiene la descripción de un código específico.
         self.legislation_tools = LegislationTools(self.http_client)
         self.summary_tools = SummaryTools(self.http_client)
         self.auxiliary_tools = AuxiliaryTools(self.http_client)
-        
+        self.analysis_tools = AnalysisTools(self.http_client)
+
         logger.info("Servidor MCP BOE inicializado correctamente")
 
     async def cleanup(self):
@@ -579,7 +603,8 @@ class BOEMCPServerWithConfig(BOEMCPServer):
         self.legislation_tools = LegislationTools(self.http_client)
         self.summary_tools = SummaryTools(self.http_client)
         self.auxiliary_tools = AuxiliaryTools(self.http_client)
-        
+        self.analysis_tools = AnalysisTools(self.http_client)
+
         logger.info("Servidor MCP BOE inicializado con configuración personalizada")
 
 

@@ -5,12 +5,14 @@ Este módulo contiene las herramientas que Claude puede usar para consultar
 las tablas de códigos, departamentos, materias y otros datos auxiliares.
 """
 
+import asyncio
 import logging
 from typing import Dict, Any, List, Optional
 
 from mcp.types import TextContent, Tool
 
 from ..utils.http_client import BOEHTTPClient, APIError
+from ..models.boe_models import validate_boe_identifier
 
 logger = logging.getLogger(__name__)
 
@@ -153,7 +155,88 @@ class AuxiliaryTools:
                     "required": ["code"],
                     "additionalProperties": False
                 }
-            )
+            ),
+            # --- Nuevas tools (grupo C) ---
+            Tool(
+                name="search_departments_advanced",
+                description=(
+                    "Búsqueda avanzada de departamentos con filtros adicionales: "
+                    "código padre para explorar jerarquías, filtro de texto y paginación. "
+                    "Complementa a get_departments_table con más opciones de filtrado."
+                ),
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "search_term": {
+                            "type": "string",
+                            "description": "Filtro de texto sobre el nombre del departamento"
+                        },
+                        "active_only": {
+                            "type": "boolean",
+                            "default": True,
+                            "description": "Mostrar solo departamentos activos (default: true)"
+                        },
+                        "parent_code": {
+                            "type": "string",
+                            "description": "Filtrar por prefijo de código para explorar jerarquías (ej: '14' para Ministerio de Justicia y sus organismos)"
+                        },
+                        "limit": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "maximum": 200,
+                            "default": 50,
+                            "description": "Número máximo de resultados (default: 50)"
+                        }
+                    },
+                    "required": [],
+                    "additionalProperties": False
+                }
+            ),
+            Tool(
+                name="list_topics_for_law",
+                description=(
+                    "Devuelve las materias/temas del vocabulario controlado asociados a una norma. "
+                    "Útil para entender la temática de una ley y encontrar filtros para búsquedas relacionadas."
+                ),
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "law_id": {
+                            "type": "string",
+                            "pattern": "^BOE-[A-Z]-\\d{4}-\\d{1,5}$",
+                            "description": "Identificador único de la norma (ej: 'BOE-A-2015-10566')"
+                        }
+                    },
+                    "required": ["law_id"],
+                    "additionalProperties": False
+                }
+            ),
+            Tool(
+                name="suggest_auxiliary_filters",
+                description=(
+                    "Dado un texto de búsqueda libre, sugiere códigos de departamentos, materias "
+                    "y rangos normativos que podrían usarse como filtros en otras herramientas. "
+                    "Útil para descubrir los códigos correctos antes de una búsqueda de legislación."
+                ),
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "query": {
+                            "type": "string",
+                            "description": "Texto libre para el que buscar sugerencias de filtros"
+                        },
+                        "max_suggestions": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "maximum": 30,
+                            "default": 10,
+                            "description": "Número máximo de sugerencias (default: 10)"
+                        }
+                    },
+                    "required": ["query"],
+                    "additionalProperties": False
+                }
+            ),
         ]
 
     async def get_departments_table(self, arguments: Dict[str, Any]) -> List[TextContent]:
@@ -868,3 +951,346 @@ class AuxiliaryTools:
                 type="text",
                 text=f"Error interno: {str(e)}"
             )]
+
+    # =========================================================================
+    # search_departments_advanced
+    # =========================================================================
+
+    async def search_departments_advanced(self, arguments: Dict[str, Any]) -> List[TextContent]:
+        """Búsqueda avanzada de departamentos con filtros adicionales.
+
+        Extiende get_departments_table con soporte para filtro por código padre
+        (jerarquía de organismos dependientes).
+
+        Args:
+            arguments: Diccionario con search_term, active_only, parent_code y limit.
+
+        Returns:
+            TextContent con la lista de departamentos filtrada.
+        """
+        try:
+            search_term = arguments.get('search_term')
+            active_only = arguments.get('active_only', True)
+            parent_code = arguments.get('parent_code')
+            limit = arguments.get('limit', 50)
+
+            logger.info(
+                f"search_departments_advanced: term={search_term}, "
+                f"parent_code={parent_code}, active_only={active_only}"
+            )
+
+            response = await self.client.get_auxiliary_table('departamentos')
+
+            if not response.get('data'):
+                return [TextContent(type="text", text="No se pudo obtener la tabla de departamentos.")]
+
+            entries = response['data'].get('entradas', [])
+
+            # Filtrar
+            filtered = []
+            for entry in entries:
+                if active_only and not entry.get('activo', True):
+                    continue
+                if search_term and search_term.lower() not in entry.get('descripcion', '').lower():
+                    continue
+                if parent_code:
+                    # Los códigos hijos comienzan por el código padre (convención jerárquica)
+                    if not entry.get('codigo', '').startswith(parent_code):
+                        continue
+                filtered.append(entry)
+
+            filtered.sort(key=lambda e: e.get('descripcion', ''))
+            showing = filtered[:limit]
+
+            formatted = self._format_advanced_departments(showing, filtered, search_term, parent_code, limit)
+            return [TextContent(type="text", text=formatted)]
+
+        except APIError as e:
+            logger.error(f"Error de API en search_departments_advanced: {e}")
+            return [TextContent(type="text", text=f"Error accediendo a departamentos: {e.mensaje}")]
+        except Exception as e:
+            logger.error(f"Error inesperado en search_departments_advanced: {e}")
+            return [TextContent(type="text", text=f"Error interno: {str(e)}")]
+
+    def _format_advanced_departments(
+        self,
+        showing: List[Dict[str, Any]],
+        filtered: List[Dict[str, Any]],
+        search_term: Optional[str],
+        parent_code: Optional[str],
+        limit: int
+    ) -> str:
+        """Formatea los resultados de búsqueda avanzada de departamentos."""
+        output = ["# 🏛️ Departamentos (búsqueda avanzada)", ""]
+
+        if not showing:
+            filters = []
+            if search_term:
+                filters.append(f"texto '{search_term}'")
+            if parent_code:
+                filters.append(f"código padre '{parent_code}'")
+            desc = ' y '.join(filters) if filters else 'los filtros especificados'
+            output.append(f"No se encontraron departamentos para {desc}.")
+            return "\n".join(output)
+
+        output.append(f"**Mostrando {len(showing)} de {len(filtered)} departamentos**")
+        if search_term:
+            output.append(f"*Filtro texto: '{search_term}'*")
+        if parent_code:
+            output.append(f"*Código padre: '{parent_code}'*")
+        output.append("")
+
+        for entry in showing:
+            codigo = entry.get('codigo', 'N/A')
+            desc = entry.get('descripcion', 'Sin descripción')
+            activo = entry.get('activo', True)
+
+            output.append(f"- **{desc}**")
+            output.append(f"  - Código: `{codigo}`")
+            if not activo:
+                output.append("  - ⚠️ *Inactivo*")
+            output.append("")
+
+        if len(filtered) > limit:
+            output.append(f"*(Mostrando los primeros {limit} de {len(filtered)} resultados)*")
+
+        output.append("💡 Usa el código con `search_consolidated_legislation` (department_code) para filtrar normas.")
+        return "\n".join(output)
+
+    # =========================================================================
+    # list_topics_for_law
+    # =========================================================================
+
+    async def list_topics_for_law(self, arguments: Dict[str, Any]) -> List[TextContent]:
+        """Devuelve las materias/temas del vocabulario controlado de una norma.
+
+        Obtiene el análisis de la norma y cruza sus materias con la tabla de materias
+        para enriquecer la información.
+
+        Args:
+            arguments: Diccionario con law_id.
+
+        Returns:
+            TextContent con la lista de materias de la norma.
+        """
+        try:
+            law_id = arguments['law_id']
+
+            if not validate_boe_identifier(law_id):
+                raise ValueError(f"Identificador de norma inválido: {law_id}")
+
+            logger.info(f"Listando materias de norma {law_id}")
+
+            # Obtener análisis de la norma
+            response = await self.client.get_law_by_id(law_id, 'analisis')
+
+            if not response.get('data'):
+                return [TextContent(type="text", text=f"No se encontró análisis para la norma {law_id}.")]
+
+            analysis_data = response['data']
+            materias_norma = analysis_data.get('materias', [])
+
+            if not materias_norma:
+                return [TextContent(
+                    type="text",
+                    text=f"La norma `{law_id}` no tiene materias registradas en el análisis."
+                )]
+
+            # Intentar enriquecer con tabla de materias (best-effort)
+            matters_by_code: Dict[str, str] = {}
+            try:
+                matters_response = await self.client.get_auxiliary_table('materias')
+                if matters_response.get('data'):
+                    for entry in matters_response['data'].get('entradas', []):
+                        matters_by_code[entry.get('codigo', '')] = entry.get('descripcion', '')
+            except APIError:
+                pass  # La tabla es opcional
+
+            formatted = self._format_law_topics(materias_norma, law_id, matters_by_code)
+            return [TextContent(type="text", text=formatted)]
+
+        except APIError as e:
+            logger.error(f"Error de API en list_topics_for_law: {e}")
+            return [TextContent(type="text", text=f"Error accediendo a la norma {law_id}: {e.mensaje}")]
+        except Exception as e:
+            logger.error(f"Error inesperado en list_topics_for_law: {e}")
+            return [TextContent(type="text", text=f"Error interno: {str(e)}")]
+
+    def _format_law_topics(
+        self,
+        materias: List[Any],
+        law_id: str,
+        matters_by_code: Dict[str, str]
+    ) -> str:
+        """Formatea las materias de una norma."""
+        output = [f"# 📚 Materias de la norma `{law_id}`", ""]
+
+        output.append(f"**{len(materias)} materia(s) registrada(s):**")
+        output.append("")
+
+        for materia in materias:
+            if isinstance(materia, dict):
+                codigo = materia.get('codigo', 'N/A')
+                texto = materia.get('texto', '')
+                # Enriquecer si tenemos la tabla
+                tabla_desc = matters_by_code.get(codigo, '')
+                desc = texto or tabla_desc or 'Sin descripción'
+                output.append(f"- **{desc}** (`{codigo}`)")
+            else:
+                output.append(f"- {materia}")
+
+        output.append("")
+        output.append(
+            "💡 Usa estos códigos con `search_consolidated_legislation` (matter_code) "
+            "para encontrar otras normas sobre los mismos temas."
+        )
+        return "\n".join(output)
+
+    # =========================================================================
+    # suggest_auxiliary_filters
+    # =========================================================================
+
+    async def suggest_auxiliary_filters(self, arguments: Dict[str, Any]) -> List[TextContent]:
+        """Dado un texto libre, sugiere códigos de tablas auxiliares como filtros.
+
+        Carga departamentos, rangos y materias en paralelo y realiza una búsqueda
+        case-insensitive sobre las descripciones.
+
+        Args:
+            arguments: Diccionario con query y max_suggestions.
+
+        Returns:
+            TextContent con las sugerencias de filtros ordenadas por relevancia.
+        """
+        try:
+            query = arguments['query']
+            max_suggestions = arguments.get('max_suggestions', 10)
+
+            if not query.strip():
+                raise ValueError("El parámetro 'query' no puede estar vacío.")
+
+            logger.info(f"suggest_auxiliary_filters: query='{query}', max={max_suggestions}")
+
+            # Cargar tablas en paralelo
+            table_names = ['departamentos', 'rangos', 'materias']
+            type_labels = {
+                'departamentos': 'department',
+                'rangos': 'range',
+                'materias': 'topic',
+            }
+
+            results = await asyncio.gather(
+                *[self.client.get_auxiliary_table(t) for t in table_names],
+                return_exceptions=True
+            )
+
+            suggestions: List[Dict[str, Any]] = []
+            query_lower = query.lower()
+
+            for table_name, result in zip(table_names, results):
+                if isinstance(result, Exception):
+                    continue
+                if not result.get('data'):
+                    continue
+
+                table_type = type_labels[table_name]
+                for entry in result['data'].get('entradas', []):
+                    desc = entry.get('descripcion', '')
+                    codigo = entry.get('codigo', '')
+                    if not entry.get('activo', True):
+                        continue
+
+                    if query_lower in desc.lower() or query_lower in codigo.lower():
+                        # Calcular relevancia: coincidencia al inicio > en medio
+                        pos = desc.lower().find(query_lower)
+                        relevance = 0 if pos == 0 else (1 if pos > 0 else 2)
+                        suggestions.append({
+                            'type': table_type,
+                            'code': codigo,
+                            'label': desc,
+                            '_relevance': relevance,
+                            '_pos': pos,
+                        })
+
+            # Ordenar por relevancia y posición de la coincidencia
+            suggestions.sort(key=lambda s: (s['_relevance'], s['_pos']))
+
+            # Limitar y limpiar
+            showing = suggestions[:max_suggestions]
+            for s in showing:
+                s.pop('_relevance', None)
+                s.pop('_pos', None)
+
+            formatted = self._format_filter_suggestions(showing, query, max_suggestions, len(suggestions))
+            return [TextContent(type="text", text=formatted)]
+
+        except ValueError as e:
+            return [TextContent(type="text", text=f"Parámetros inválidos: {str(e)}")]
+        except Exception as e:
+            logger.error(f"Error en suggest_auxiliary_filters: {e}")
+            return [TextContent(type="text", text=f"Error interno: {str(e)}")]
+
+    def _format_filter_suggestions(
+        self,
+        suggestions: List[Dict[str, Any]],
+        query: str,
+        max_suggestions: int,
+        total_found: int
+    ) -> str:
+        """Formatea las sugerencias de filtros."""
+        output = [
+            f"# 💡 Sugerencias de filtros para «{query}»",
+            "",
+        ]
+
+        if not suggestions:
+            output.append(
+                f"No se encontraron filtros de tablas auxiliares relacionados con «{query}».\n\n"
+                "Prueba con términos más generales o consulta directamente "
+                "`get_departments_table`, `get_legal_ranges_table` o `get_matters_table`."
+            )
+            return "\n".join(output)
+
+        type_emojis = {
+            'department': '🏛️ Departamento',
+            'range': '⚖️ Rango normativo',
+            'topic': '📚 Materia',
+        }
+
+        output.append(
+            f"**{len(suggestions)} sugerencia(s)**"
+            + (f" de {total_found} encontradas" if total_found > max_suggestions else "")
+        )
+        output.append("")
+
+        # Agrupar por tipo para mejor legibilidad
+        by_type: Dict[str, List[Dict]] = {}
+        for s in suggestions:
+            by_type.setdefault(s['type'], []).append(s)
+
+        for type_key, type_label in type_emojis.items():
+            items = by_type.get(type_key, [])
+            if not items:
+                continue
+            output.append(f"## {type_label}")
+            output.append("")
+            for item in items:
+                output.append(f"- **{item['label']}** — código: `{item['code']}`")
+            output.append("")
+
+        # Pista de uso
+        param_map = {
+            'department': 'department_code',
+            'range': 'legal_range_code',
+            'topic': 'matter_code',
+        }
+        output.append("## Cómo usar estos filtros")
+        output.append("")
+        output.append("Pasa los códigos como parámetros en `search_consolidated_legislation`:")
+        output.append("```")
+        for s in suggestions[:3]:
+            param = param_map.get(s['type'], 'code')
+            output.append(f'{param}: "{s["code"]}"  # {s["label"]}')
+        output.append("```")
+
+        return "\n".join(output)

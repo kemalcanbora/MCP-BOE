@@ -191,7 +191,9 @@ Compara dos normas e identifica relaciones de modificación o derogación entre 
 
 ## 🔧 Herramientas disponibles
 
-### 📜 Legislación Consolidada (5 herramientas)
+**31 herramientas en total** organizadas en 5 grupos.
+
+### 📜 Legislación Consolidada (9 herramientas)
 
 | Herramienta | Descripción | Parámetros clave |
 |-------------|-------------|------------------|
@@ -200,8 +202,12 @@ Compara dos normas e identifica relaciones de modificación o derogación entre 
 | `get_law_structure` | Índice completo de una norma (artículos, disposiciones, anexos) | `law_id` |
 | `get_law_text_block` | Texto de un artículo o disposición específica | `law_id`, `block_id` |
 | `find_related_laws` | Normas que modifican, derogan o son modificadas por una norma | `law_id`, `relation_type` |
+| `compare_law_versions` | Compara el texto de una norma entre dos fechas, detectando artículos añadidos, modificados o eliminados | `law_id`, `from_date`, `to_date`, `granularity` |
+| `search_law_articles` | Busca artículos concretos dentro de una norma sin descargar el texto completo | `law_id`, `query`, `search_in`, `limit` |
+| `get_law_metadata` | Obtiene solo los metadatos de una norma (rango, fecha, órgano, estado, enlaces) sin cargar el texto | `law_id` |
+| `list_related_laws` | Lista normas relacionadas con control granular sobre qué tipos de relación incluir | `law_id`, `include_derogating`, `include_development`, `include_references` |
 
-### 📰 Sumarios BOE/BORME (4 herramientas)
+### 📰 Sumarios BOE/BORME (7 herramientas)
 
 | Herramienta | Descripción | Parámetros clave |
 |-------------|-------------|------------------|
@@ -209,8 +215,11 @@ Compara dos normas e identifica relaciones de modificación o derogación entre 
 | `get_borme_summary` | Sumario del BORME (Registro Mercantil) | `date`, `province_filter`, `max_items` |
 | `search_recent_boe` | Busca documentos en los últimos N días | `days_back`, `search_terms`, `section_filter` |
 | `get_weekly_summary` | Estadísticas y resumen de una semana completa | `start_date`, `include_statistics` |
+| `get_boe_summary_range` | Agrega los sumarios de un rango de fechas (máx. 31 días) con filtro de sección | `from_date`, `to_date`, `section`, `max_items` |
+| `watch_boe_changes` | Radar normativo: busca publicaciones recientes por palabras clave | `days_back`, `keywords`, `sections`, `max_items` |
+| `group_summary_by_department` | Agrupa las publicaciones de un rango de fechas por departamento emisor | `from_date`, `to_date`, `sections`, `max_items_per_dept` |
 
-### 🏛️ Tablas Auxiliares (7 herramientas)
+### 🏛️ Tablas Auxiliares (10 herramientas)
 
 | Herramienta | Descripción |
 |-------------|-------------|
@@ -221,6 +230,18 @@ Compara dos normas e identifica relaciones de modificación o derogación entre 
 | `get_consolidation_states_table` | Estados de consolidación |
 | `search_auxiliary_data` | Búsqueda en todas las tablas a la vez |
 | `get_code_description` | Descripción de un código específico |
+| `search_departments_advanced` | Búsqueda avanzada de departamentos con filtro por código padre (jerarquía) | `search_term`, `active_only`, `parent_code`, `limit` |
+| `list_topics_for_law` | Lista las materias del vocabulario controlado de una norma concreta | `law_id` |
+| `suggest_auxiliary_filters` | Dado un texto libre, sugiere códigos de departamento, rango y materia para filtrar búsquedas | `query`, `max_suggestions` |
+
+### 🛠️ Calidad de vida para LLMs (4 herramientas)
+
+| Herramienta | Descripción | Parámetros clave |
+|-------------|-------------|------------------|
+| `summarize_law_sections` | Resumen estructurado de una norma con el primer párrafo de cada artículo | `law_id` |
+| `paginate_law_text` | Devuelve el texto de una norma por páginas usando un cursor opaco | `law_id`, `cursor`, `max_chars` |
+| `explain_law_structure` | Describe la estructura jerárquica de una norma con recuento de elementos por nivel | `law_id` |
+| `normalize_boe_reference` | Normaliza una referencia textual a una norma o sumario en campos estructurados | `reference_text` |
 
 ### 📄 Lectura de PDFs (1 herramienta)
 
@@ -396,9 +417,10 @@ MCP-BOE/
 │   ├── models/
 │   │   └── boe_models.py       # Modelos Pydantic y validadores
 │   ├── tools/
-│   │   ├── legislation.py      # 5 herramientas de legislación consolidada
-│   │   ├── summaries.py        # 4 herramientas de sumarios BOE/BORME
-│   │   ├── auxiliary.py        # 7 herramientas de tablas auxiliares
+│   │   ├── legislation.py      # 9 herramientas de legislación consolidada
+│   │   ├── summaries.py        # 7 herramientas de sumarios BOE/BORME
+│   │   ├── auxiliary.py        # 10 herramientas de tablas auxiliares
+│   │   ├── analysis.py         # 4 herramientas de calidad de vida para LLMs
 │   │   └── documents.py        # 1 herramienta de lectura de PDFs
 │   └── utils/
 │       └── http_client.py      # Cliente HTTP asíncrono con reintentos
@@ -434,7 +456,7 @@ uv run black src/
 ### v0.1.0
 
 - Implementación inicial del servidor MCP
-- **17 herramientas**: 5 de legislación, 4 de sumarios, 7 de tablas auxiliares, 1 de lectura de PDFs
+- **31 herramientas**: 9 de legislación, 7 de sumarios, 10 de tablas auxiliares, 4 de calidad de vida para LLMs, 1 de lectura de PDFs
 - Herramienta `read_boe_pdf`: descarga y extrae texto de PDFs del BOE por URL o por ID de norma
 - 4 prompts integrados: `buscar_legislacion`, `analizar_norma`, `resumen_boe_dia`, `comparar_normas`
 - 2 recursos MCP: `boe://help` y `boe://status`

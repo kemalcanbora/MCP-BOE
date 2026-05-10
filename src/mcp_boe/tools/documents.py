@@ -29,10 +29,15 @@ class DocumentTools:
             Tool(
                 name="read_boe_pdf",
                 description=(
-                    "Descarga y extrae el texto de un PDF del BOE para que puedas "
-                    "leerlo y explicar de qué trata. Acepta la URL directa del PDF "
-                    "(campo url_pdf de los sumarios) o el identificador BOE "
-                    "(ej: BOE-A-2025-6192), del que se construye la URL automáticamente."
+                    "Descarga y extrae el texto COMPLETO de cualquier documento del BOE "
+                    "(leyes, decretos, órdenes ministeriales, ceses, nombramientos, "
+                    "anuncios, resoluciones, etc.) para leerlo y explicarlo en detalle. "
+                    "Úsala SIEMPRE que el usuario pida 'más detalles', 'el contenido', "
+                    "'qué dice exactamente' o 'léeme' un documento del BOE. "
+                    "Acepta la URL directa del PDF (campo url_pdf de los sumarios) "
+                    "o el identificador BOE (ej: BOE-A-2025-6192), del que se construye "
+                    "la URL automáticamente. Es la única herramienta que puede leer el "
+                    "contenido íntegro de documentos NO consolidados (sección II, III, etc.)."
                 ),
                 inputSchema={
                     "type": "object",
@@ -121,7 +126,7 @@ class DocumentTools:
 
         diario = parts[0].lower()   # "boe" o "borme"
 
-        # Consultamos la API de metadatos para obtener la fecha real de publicación
+        # Intento 1: API de legislación consolidada (devuelve fecha en YYYYMMDD o YYYY-MM-DD)
         try:
             api_url = f"https://www.boe.es/datosabiertos/api/legislacion-consolidada/id/{boe_id}/metadatos"
             async with httpx.AsyncClient(timeout=15.0, follow_redirects=True) as client:
@@ -129,16 +134,43 @@ class DocumentTools:
                 if r.status_code == 200:
                     payload = r.json()
                     data = payload.get("data") or {}
-                    # La API puede devolver data como lista o como dict
                     if isinstance(data, list):
                         data = data[0] if data else {}
-                    fecha = data.get("fecha_publicacion", "")
-                    if fecha and len(fecha) == 8:
+                    fecha = self._normalize_fecha(data.get("fecha_publicacion", ""))
+                    if fecha:
                         yyyy, mm, dd = fecha[:4], fecha[4:6], fecha[6:]
                         return f"https://www.boe.es/{diario}/dias/{yyyy}/{mm}/{dd}/pdfs/{boe_id}.pdf"
         except Exception:
             pass
 
+        # Intento 2: página HTML del BOE, que existe para CUALQUIER documento publicado
+        try:
+            import re
+            html_url = f"https://www.boe.es/diario_boe/txt.php?id={boe_id}"
+            async with httpx.AsyncClient(timeout=15.0, follow_redirects=True) as client:
+                r = await client.get(html_url, headers={"Accept": "text/html"})
+                if r.status_code == 200:
+                    match = re.search(
+                        r'/(?:boe|borme)/dias/(\d{4}/\d{2}/\d{2})/pdfs/',
+                        r.text,
+                    )
+                    if match:
+                        date_path = match.group(1)   # "2026/04/29"
+                        return f"https://www.boe.es/{diario}/dias/{date_path}/pdfs/{boe_id}.pdf"
+        except Exception:
+            pass
+
+        return None
+
+    @staticmethod
+    def _normalize_fecha(fecha: str) -> str | None:
+        """Normaliza fecha a formato YYYYMMDD; acepta YYYYMMDD y YYYY-MM-DD."""
+        if not fecha:
+            return None
+        if len(fecha) == 8 and fecha.isdigit():
+            return fecha
+        if len(fecha) == 10 and fecha[4] == "-" and fecha[7] == "-":
+            return fecha.replace("-", "")
         return None
 
     async def _download_pdf(self, url: str) -> bytes:

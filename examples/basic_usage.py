@@ -14,6 +14,7 @@ from mcp_boe import BOEHTTPClient, BOEMCPServer
 from mcp_boe.tools.legislation import LegislationTools
 from mcp_boe.tools.summaries import SummaryTools
 from mcp_boe.tools.auxiliary import AuxiliaryTools
+from mcp_boe.tools.analysis import AnalysisTools
 
 
 async def example_search_legislation():
@@ -201,22 +202,299 @@ async def example_get_code_description():
             print()
 
 
+async def example_compare_law_versions():
+    """Ejemplo: Comparar versiones de una norma entre dos fechas."""
+    print("🔄 Ejemplo: Comparación de versiones")
+    print("=" * 60)
+
+    async with BOEHTTPClient() as client:
+        tools = LegislationTools(client)
+
+        print("Comparando Ley 40/2015 entre 2016 y 2021...")
+        results = await tools.compare_law_versions({
+            "law_id": "BOE-A-2015-10566",
+            "from_date": "20160101",
+            "to_date": "20210101",
+        })
+
+        for result in results:
+            text = result.text
+            if len(text) > 1500:
+                text = text[:1500] + "...\n\n[Contenido truncado para el ejemplo]"
+            print(text)
+            print()
+
+
+async def example_search_law_articles():
+    """Ejemplo: Buscar artículos por texto dentro de una norma."""
+    print("🔍 Ejemplo: Búsqueda en artículos")
+    print("=" * 60)
+
+    async with BOEHTTPClient() as client:
+        tools = LegislationTools(client)
+
+        print("Buscando 'competencia' en la Ley 40/2015...")
+        results = await tools.search_law_articles({
+            "law_id": "BOE-A-2015-10566",
+            "query": "competencia",
+            "limit": 5,
+        })
+
+        for result in results:
+            print(result.text)
+            print()
+
+
+async def example_get_law_metadata():
+    """Ejemplo: Obtener metadatos ligeros de una norma."""
+    print("📋 Ejemplo: Metadatos de norma")
+    print("=" * 60)
+
+    async with BOEHTTPClient() as client:
+        tools = LegislationTools(client)
+
+        print("Obteniendo metadatos de la Ley 40/2015...")
+        results = await tools.get_law_metadata({"law_id": "BOE-A-2015-10566"})
+
+        for result in results:
+            print(result.text)
+            print()
+
+
+async def example_list_related_laws():
+    """Ejemplo: Listar normas relacionadas con control granular."""
+    print("🔗 Ejemplo: Normas relacionadas")
+    print("=" * 60)
+
+    async with BOEHTTPClient() as client:
+        tools = LegislationTools(client)
+
+        print("Normas que derogan o son derogadas por Ley 40/2015...")
+        results = await tools.list_related_laws({
+            "law_id": "BOE-A-2015-10566",
+            "include_derogating": True,
+            "include_development": False,
+            "include_references": False,
+        })
+
+        for result in results:
+            print(result.text)
+            print()
+
+
+async def example_get_boe_summary_range():
+    """Ejemplo: Sumario BOE para un rango de fechas."""
+    print("📰 Ejemplo: Sumario de rango")
+    print("=" * 60)
+
+    async with BOEHTTPClient() as client:
+        tools = SummaryTools(client)
+
+        print("Obteniendo publicaciones BOE del 27 al 31 de mayo de 2024...")
+        results = await tools.get_boe_summary_range({
+            "from_date": "20240527",
+            "to_date": "20240531",
+            "max_items": 10,
+        })
+
+        for result in results:
+            text = result.text
+            if len(text) > 1500:
+                text = text[:1500] + "...\n\n[Contenido truncado para el ejemplo]"
+            print(text)
+            print()
+
+
+async def example_watch_boe_changes():
+    """Ejemplo: Radar normativo por palabras clave."""
+    print("📡 Ejemplo: Radar normativo")
+    print("=" * 60)
+
+    async with BOEHTTPClient() as client:
+        tools = SummaryTools(client)
+
+        print("Buscando 'inteligencia artificial' en el BOE de los últimos 30 días...")
+        results = await tools.watch_boe_changes({
+            "days_back": 30,
+            "keywords": "inteligencia artificial",
+            "max_items": 10,
+        })
+
+        for result in results:
+            print(result.text)
+            print()
+
+
+async def example_group_summary_by_department():
+    """Ejemplo: Agrupar publicaciones por departamento."""
+    print("🏛️ Ejemplo: Publicaciones por departamento")
+    print("=" * 60)
+
+    async with BOEHTTPClient() as client:
+        tools = SummaryTools(client)
+
+        recent_end = datetime.now().strftime("%Y%m%d")
+        recent_start = (datetime.now() - timedelta(days=7)).strftime("%Y%m%d")
+        print(f"Agrupando publicaciones del {recent_start} al {recent_end} por departamento...")
+        results = await tools.group_summary_by_department({
+            "from_date": recent_start,
+            "to_date": recent_end,
+            "max_items_per_dept": 3,
+        })
+
+        for result in results:
+            text = result.text
+            if len(text) > 2000:
+                text = text[:2000] + "...\n\n[Contenido truncado para el ejemplo]"
+            print(text)
+            print()
+
+
+async def example_search_departments_advanced():
+    """Ejemplo: Búsqueda avanzada de departamentos."""
+    print("🏛️ Ejemplo: Búsqueda avanzada de departamentos")
+    print("=" * 60)
+
+    async with BOEHTTPClient() as client:
+        tools = AuxiliaryTools(client)
+
+        print("Buscando secretarías de estado...")
+        results = await tools.search_departments_advanced({
+            "search_term": "Secretaría de Estado",
+            "active_only": True,
+            "limit": 10,
+        })
+
+        for result in results:
+            print(result.text)
+            print()
+
+
+async def example_list_topics_for_law():
+    """Ejemplo: Materias de una norma concreta."""
+    print("📚 Ejemplo: Materias de una norma")
+    print("=" * 60)
+
+    async with BOEHTTPClient() as client:
+        tools = AuxiliaryTools(client)
+
+        print("Listando materias de la Ley 40/2015...")
+        results = await tools.list_topics_for_law({"law_id": "BOE-A-2015-10566"})
+
+        for result in results:
+            print(result.text)
+            print()
+
+
+async def example_suggest_auxiliary_filters():
+    """Ejemplo: Sugerencias de filtros auxiliares desde texto libre."""
+    print("💡 Ejemplo: Sugerencias de filtros")
+    print("=" * 60)
+
+    async with BOEHTTPClient() as client:
+        tools = AuxiliaryTools(client)
+
+        print("Buscando sugerencias para 'medio ambiente'...")
+        results = await tools.suggest_auxiliary_filters({
+            "query": "medio ambiente",
+            "max_suggestions": 8,
+        })
+
+        for result in results:
+            print(result.text)
+            print()
+
+
+async def example_summarize_law_sections():
+    """Ejemplo: Resumen estructurado de una norma."""
+    print("📝 Ejemplo: Resumen de secciones")
+    print("=" * 60)
+
+    async with BOEHTTPClient() as client:
+        tools = AnalysisTools(client)
+
+        print("Resumiendo secciones de la Ley 40/2015...")
+        results = await tools.summarize_law_sections({"law_id": "BOE-A-2015-10566"})
+
+        for result in results:
+            text = result.text
+            if len(text) > 1500:
+                text = text[:1500] + "...\n\n[Contenido truncado para el ejemplo]"
+            print(text)
+            print()
+
+
+async def example_paginate_law_text():
+    """Ejemplo: Paginación de texto de una norma."""
+    print("📄 Ejemplo: Paginación de texto")
+    print("=" * 60)
+
+    async with BOEHTTPClient() as client:
+        tools = AnalysisTools(client)
+
+        print("Obteniendo primera página de la Ley 40/2015 (2000 caracteres)...")
+        results = await tools.paginate_law_text({
+            "law_id": "BOE-A-2015-10566",
+            "max_chars": 2000,
+        })
+
+        for result in results:
+            print(result.text)
+            print()
+
+
+async def example_normalize_boe_reference():
+    """Ejemplo: Normalizar referencias textuales a normas."""
+    print("🔤 Ejemplo: Normalización de referencias")
+    print("=" * 60)
+
+    async with BOEHTTPClient() as client:
+        tools = AnalysisTools(client)
+
+        references = [
+            "Ley 40/2015",
+            "Real Decreto 1/2020",
+            "BOE-A-2015-10566",
+            "BOE del 3 de mayo de 2024",
+            "Ley Orgánica 3/2018",
+        ]
+
+        for ref in references:
+            results = await tools.normalize_boe_reference({"reference_text": ref})
+            print(f"  «{ref}» →")
+            print(f"    {results[0].text.strip()}")
+            print()
+
+
 async def run_all_examples():
     """Ejecuta todos los ejemplos."""
     print("🚀 Ejecutando todos los ejemplos del MCP BOE")
     print("=" * 80)
     print()
-    
+
     examples = [
         ("Búsqueda de legislación", example_search_legislation),
         ("Detalles de norma", example_get_law_details),
         ("Estructura de norma", example_get_law_structure),
+        ("Comparar versiones", example_compare_law_versions),
+        ("Buscar artículos", example_search_law_articles),
+        ("Metadatos de norma", example_get_law_metadata),
+        ("Normas relacionadas", example_list_related_laws),
         ("Sumario del BOE", example_get_boe_summary),
         ("Búsqueda reciente BOE", example_search_recent_boe),
+        ("Sumario por rango", example_get_boe_summary_range),
+        ("Radar normativo", example_watch_boe_changes),
+        ("Publicaciones por dpto.", example_group_summary_by_department),
         ("Tabla de departamentos", example_get_departments),
         ("Rangos normativos", example_get_legal_ranges),
         ("Búsqueda auxiliares", example_search_auxiliary),
         ("Descripción de código", example_get_code_description),
+        ("Departamentos avanzado", example_search_departments_advanced),
+        ("Materias de norma", example_list_topics_for_law),
+        ("Sugerencias de filtros", example_suggest_auxiliary_filters),
+        ("Resumen de secciones", example_summarize_law_sections),
+        ("Paginación de texto", example_paginate_law_text),
+        ("Normalizar referencia", example_normalize_boe_reference),
     ]
     
     for i, (name, func) in enumerate(examples, 1):

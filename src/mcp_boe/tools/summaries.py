@@ -133,7 +133,7 @@ class SummaryTools:
                 name="get_weekly_summary",
                 description="Obtiene un resumen semanal de publicaciones del BOE",
                 inputSchema={
-                    "type": "object", 
+                    "type": "object",
                     "properties": {
                         "start_date": {
                             "type": "string",
@@ -149,7 +149,111 @@ class SummaryTools:
                     "required": ["start_date"],
                     "additionalProperties": False
                 }
-            )
+            ),
+            # --- Nuevas tools (grupo B) ---
+            Tool(
+                name="get_boe_summary_range",
+                description=(
+                    "Obtiene y agrega los sumarios del BOE para un rango de fechas. "
+                    "Permite ver todas las publicaciones de un período sin llamar a get_boe_summary "
+                    "día por día. Máximo 31 días de rango."
+                ),
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "from_date": {
+                            "type": "string",
+                            "description": "Fecha de inicio en formato AAAAMMDD o YYYY-MM-DD"
+                        },
+                        "to_date": {
+                            "type": "string",
+                            "description": "Fecha de fin en formato AAAAMMDD o YYYY-MM-DD"
+                        },
+                        "section": {
+                            "type": "string",
+                            "description": "Filtrar por sección del BOE (ej: '1', '2A', '3'). Omitir para todas."
+                        },
+                        "max_items": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "maximum": 500,
+                            "default": 100,
+                            "description": "Límite total de documentos a devolver (default: 100)"
+                        }
+                    },
+                    "required": ["from_date", "to_date"],
+                    "additionalProperties": False
+                }
+            ),
+            Tool(
+                name="watch_boe_changes",
+                description=(
+                    "Busca publicaciones recientes del BOE que coincidan con palabras clave, "
+                    "mirando hacia atrás un número de días configurable. "
+                    "Útil como 'radar normativo' para monitorizar temas de interés."
+                ),
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "days_back": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "maximum": 90,
+                            "description": "Número de días hacia atrás para buscar"
+                        },
+                        "keywords": {
+                            "type": "string",
+                            "description": "Palabras clave separadas por espacios. Se busca cada palabra de forma independiente (OR)."
+                        },
+                        "sections": {
+                            "type": "string",
+                            "description": "Secciones del BOE a incluir, separadas por comas (ej: '1,3'). Omitir para todas."
+                        },
+                        "max_items": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "maximum": 200,
+                            "default": 50,
+                            "description": "Límite total de resultados (default: 50)"
+                        }
+                    },
+                    "required": ["days_back", "keywords"],
+                    "additionalProperties": False
+                }
+            ),
+            Tool(
+                name="group_summary_by_department",
+                description=(
+                    "Obtiene el sumario del BOE para un rango de fechas y agrupa las publicaciones "
+                    "por departamento emisor, mostrando cuántas y cuáles disposiciones emitió cada uno."
+                ),
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "from_date": {
+                            "type": "string",
+                            "description": "Fecha de inicio en formato AAAAMMDD o YYYY-MM-DD"
+                        },
+                        "to_date": {
+                            "type": "string",
+                            "description": "Fecha de fin en formato AAAAMMDD o YYYY-MM-DD"
+                        },
+                        "sections": {
+                            "type": "string",
+                            "description": "Secciones del BOE a incluir, separadas por comas. Omitir para todas."
+                        },
+                        "max_items_per_dept": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "maximum": 50,
+                            "default": 10,
+                            "description": "Máximo de documentos a mostrar por departamento (default: 10)"
+                        }
+                    },
+                    "required": ["from_date", "to_date"],
+                    "additionalProperties": False
+                }
+            ),
         ]
 
     async def get_boe_summary(self, arguments: Dict[str, Any]) -> List[TextContent]:
@@ -933,4 +1037,407 @@ class SummaryTools:
                 text=f"Error accediendo al sumario del BORME: {e.mensaje}"
             )]
         except Exception as e:
-            logger
+            logger.error(f"Error inesperado obteniendo sumario BORME: {e}")
+            return [TextContent(
+                type="text",
+                text=f"Error interno: {str(e)}"
+            )]
+
+    # =========================================================================
+    # get_boe_summary_range
+    # =========================================================================
+
+    async def get_boe_summary_range(self, arguments: Dict[str, Any]) -> List[TextContent]:
+        """Obtiene y agrega los sumarios del BOE para un rango de fechas.
+
+        Itera sobre cada día del rango (excluyendo domingos), recoge los documentos
+        y aplica filtros opcionales de sección y límite total.
+
+        Args:
+            arguments: Diccionario con from_date, to_date, section y max_items.
+
+        Returns:
+            TextContent con los documentos del rango agrupados por fecha.
+        """
+        try:
+            from_date_raw = arguments['from_date']
+            to_date_raw = arguments['to_date']
+            section = arguments.get('section')
+            max_items = arguments.get('max_items', 100)
+
+            from_date = format_date_for_api(from_date_raw)
+            to_date = format_date_for_api(to_date_raw)
+
+            if from_date > to_date:
+                raise ValueError("from_date debe ser anterior o igual a to_date.")
+
+            start_dt = datetime.strptime(from_date, '%Y%m%d')
+            end_dt = datetime.strptime(to_date, '%Y%m%d')
+            delta_days = (end_dt - start_dt).days
+
+            if delta_days > 31:
+                raise ValueError(
+                    f"El rango máximo es de 31 días. Se solicitaron {delta_days} días. "
+                    "Usa rangos más cortos o itera manualmente."
+                )
+
+            logger.info(f"Obteniendo sumario BOE rango {from_date}–{to_date}, sección={section}")
+
+            all_docs: List[Dict[str, Any]] = []
+            current_dt = start_dt
+            truncated = False
+
+            while current_dt <= end_dt:
+                if current_dt.weekday() == 6:  # domingo sin BOE
+                    current_dt += timedelta(days=1)
+                    continue
+
+                date_str = current_dt.strftime('%Y%m%d')
+                try:
+                    response = await self.client.get_boe_summary(date_str)
+                    if response.get('data'):
+                        day_docs = self._extract_matching_documents(
+                            response['data']['sumario'],
+                            date_str,
+                            search_terms=None,
+                            section_filter=section or 'all',
+                            department_filter=None
+                        )
+                        all_docs.extend(day_docs)
+                        if len(all_docs) >= max_items:
+                            all_docs = all_docs[:max_items]
+                            truncated = True
+                            break
+                except APIError:
+                    pass  # Día sin BOE (festivo, etc.)
+
+                current_dt += timedelta(days=1)
+
+            formatted = self._format_range_summary(all_docs, from_date_raw, to_date_raw, truncated, max_items)
+            return [TextContent(type="text", text=formatted)]
+
+        except ValueError as e:
+            return [TextContent(type="text", text=f"Parámetros inválidos: {str(e)}")]
+        except Exception as e:
+            logger.error(f"Error obteniendo sumario por rango: {e}")
+            return [TextContent(type="text", text=f"Error interno: {str(e)}")]
+
+    def _format_range_summary(
+        self,
+        docs: List[Dict[str, Any]],
+        from_date: str,
+        to_date: str,
+        truncated: bool,
+        max_items: int
+    ) -> str:
+        """Formatea el sumario de un rango de fechas."""
+        output = [
+            f"# 📰 Sumario BOE del {from_date} al {to_date}",
+            "",
+        ]
+
+        if not docs:
+            output.append("No se encontraron documentos en el rango especificado.")
+            return "\n".join(output)
+
+        output.append(f"**{len(docs)} documento(s) encontrado(s)**{'  *(resultado truncado)*' if truncated else ''}")
+        output.append("")
+
+        # Agrupar por fecha
+        by_date: Dict[str, List[Dict]] = {}
+        for doc in docs:
+            by_date.setdefault(doc['fecha'], []).append(doc)
+
+        for date_key in sorted(by_date.keys()):
+            try:
+                date_obj = datetime.strptime(date_key, '%Y%m%d')
+                formatted_date = date_obj.strftime('%d/%m/%Y')
+            except ValueError:
+                formatted_date = date_key
+
+            output.append(f"## {formatted_date} ({len(by_date[date_key])} docs)")
+            output.append("")
+            for doc in by_date[date_key]:
+                output.append(f"- **{doc['titulo']}**")
+                output.append(f"  - ID: `{doc['identificador']}` · {doc['departamento']}")
+                if doc.get('pdf_url'):
+                    output.append(f"  - PDF: {doc['pdf_url']}")
+                output.append("")
+
+        if truncated:
+            output.append(f"⚠️ Se alcanzó el límite de {max_items} documentos. Reduce el rango o aumenta max_items.")
+
+        return "\n".join(output)
+
+    # =========================================================================
+    # watch_boe_changes
+    # =========================================================================
+
+    async def watch_boe_changes(self, arguments: Dict[str, Any]) -> List[TextContent]:
+        """Busca publicaciones recientes del BOE que coincidan con palabras clave.
+
+        Args:
+            arguments: Diccionario con days_back, keywords, sections y max_items.
+
+        Returns:
+            TextContent con las publicaciones relevantes encontradas.
+        """
+        try:
+            days_back = arguments['days_back']
+            keywords_raw = arguments['keywords']
+            sections_raw = arguments.get('sections', '')
+            max_items = arguments.get('max_items', 50)
+
+            # Parsear keywords
+            keywords = [k.strip() for k in keywords_raw.replace(',', ' ').split() if k.strip()]
+            if not keywords:
+                raise ValueError("Debes proporcionar al menos una palabra clave.")
+
+            # Parsear secciones
+            section_set: Optional[set] = None
+            if sections_raw:
+                section_set = {s.strip() for s in sections_raw.split(',') if s.strip()}
+
+            end_dt = datetime.now()
+            start_dt = end_dt - timedelta(days=days_back)
+
+            logger.info(f"watch_boe_changes: {days_back} días, keywords={keywords}, sections={section_set}")
+
+            found_docs: List[Dict[str, Any]] = []
+            current_dt = start_dt
+
+            while current_dt <= end_dt and len(found_docs) < max_items:
+                if current_dt.weekday() == 6:
+                    current_dt += timedelta(days=1)
+                    continue
+
+                date_str = current_dt.strftime('%Y%m%d')
+                try:
+                    response = await self.client.get_boe_summary(date_str)
+                    if response.get('data'):
+                        for kw in keywords:
+                            day_docs = self._extract_matching_documents(
+                                response['data']['sumario'],
+                                date_str,
+                                search_terms=kw,
+                                section_filter='all',
+                                department_filter=None
+                            )
+                            # Filtrar secciones si se indicaron
+                            if section_set:
+                                day_docs = [
+                                    d for d in day_docs
+                                    if any(sec in d.get('seccion', '') for sec in section_set)
+                                ]
+                            for d in day_docs:
+                                # Evitar duplicados por identificador
+                                if not any(
+                                    existing['identificador'] == d['identificador']
+                                    for existing in found_docs
+                                ):
+                                    d['matched_keyword'] = kw
+                                    found_docs.append(d)
+                                    if len(found_docs) >= max_items:
+                                        break
+                            if len(found_docs) >= max_items:
+                                break
+                except APIError:
+                    pass
+
+                current_dt += timedelta(days=1)
+
+            formatted = self._format_watch_results(
+                found_docs, days_back, keywords,
+                max_items, len(found_docs) >= max_items
+            )
+            return [TextContent(type="text", text=formatted)]
+
+        except ValueError as e:
+            return [TextContent(type="text", text=f"Parámetros inválidos: {str(e)}")]
+        except Exception as e:
+            logger.error(f"Error en watch_boe_changes: {e}")
+            return [TextContent(type="text", text=f"Error interno: {str(e)}")]
+
+    def _format_watch_results(
+        self,
+        docs: List[Dict[str, Any]],
+        days_back: int,
+        keywords: List[str],
+        max_items: int,
+        truncated: bool
+    ) -> str:
+        """Formatea los resultados del radar normativo."""
+        kw_str = ', '.join(f'«{k}»' for k in keywords)
+        output = [
+            f"# 📡 Radar normativo — últimos {days_back} días",
+            f"**Palabras clave:** {kw_str}",
+            "",
+        ]
+
+        if not docs:
+            output.append(
+                f"No se encontraron publicaciones del BOE relacionadas con {kw_str} "
+                f"en los últimos {days_back} días."
+            )
+            return "\n".join(output)
+
+        output.append(
+            f"**{len(docs)} resultado(s)**{'  *(truncado a ' + str(max_items) + ')*' if truncated else ''}"
+        )
+        output.append("")
+
+        # Agrupar por fecha (más reciente primero)
+        by_date: Dict[str, List[Dict]] = {}
+        for doc in docs:
+            by_date.setdefault(doc['fecha'], []).append(doc)
+
+        for date_key in sorted(by_date.keys(), reverse=True):
+            try:
+                date_obj = datetime.strptime(date_key, '%Y%m%d')
+                formatted_date = date_obj.strftime('%d/%m/%Y')
+            except ValueError:
+                formatted_date = date_key
+
+            output.append(f"## {formatted_date}")
+            for doc in by_date[date_key]:
+                kw_match = doc.get('matched_keyword', '')
+                output.append(f"- **{doc['titulo']}**")
+                output.append(f"  - ID: `{doc['identificador']}` · {doc['departamento']}")
+                if kw_match:
+                    output.append(f"  - *Coincidencia: «{kw_match}»*")
+                if doc.get('pdf_url'):
+                    output.append(f"  - PDF: {doc['pdf_url']}")
+                output.append("")
+
+        return "\n".join(output)
+
+    # =========================================================================
+    # group_summary_by_department
+    # =========================================================================
+
+    async def group_summary_by_department(self, arguments: Dict[str, Any]) -> List[TextContent]:
+        """Obtiene el sumario de un rango de fechas y agrupa por departamento emisor.
+
+        Args:
+            arguments: Diccionario con from_date, to_date, sections y max_items_per_dept.
+
+        Returns:
+            TextContent con los departamentos ordenados por número de publicaciones.
+        """
+        try:
+            from_date_raw = arguments['from_date']
+            to_date_raw = arguments['to_date']
+            sections_raw = arguments.get('sections', '')
+            max_items_per_dept = arguments.get('max_items_per_dept', 10)
+
+            from_date = format_date_for_api(from_date_raw)
+            to_date = format_date_for_api(to_date_raw)
+
+            if from_date > to_date:
+                raise ValueError("from_date debe ser anterior o igual a to_date.")
+
+            start_dt = datetime.strptime(from_date, '%Y%m%d')
+            end_dt = datetime.strptime(to_date, '%Y%m%d')
+            delta_days = (end_dt - start_dt).days
+
+            if delta_days > 31:
+                raise ValueError(f"El rango máximo es de 31 días (se solicitaron {delta_days}).")
+
+            section_set: Optional[set] = None
+            if sections_raw:
+                section_set = {s.strip() for s in sections_raw.split(',') if s.strip()}
+
+            logger.info(f"group_summary_by_department: {from_date}–{to_date}, sections={section_set}")
+
+            # Recoger todos los documentos del rango
+            all_docs: List[Dict[str, Any]] = []
+            current_dt = start_dt
+
+            while current_dt <= end_dt:
+                if current_dt.weekday() == 6:
+                    current_dt += timedelta(days=1)
+                    continue
+
+                date_str = current_dt.strftime('%Y%m%d')
+                try:
+                    response = await self.client.get_boe_summary(date_str)
+                    if response.get('data'):
+                        day_docs = self._extract_matching_documents(
+                            response['data']['sumario'],
+                            date_str,
+                            search_terms=None,
+                            section_filter='all',
+                            department_filter=None
+                        )
+                        if section_set:
+                            day_docs = [
+                                d for d in day_docs
+                                if any(sec in d.get('seccion', '') for sec in section_set)
+                            ]
+                        all_docs.extend(day_docs)
+                except APIError:
+                    pass
+
+                current_dt += timedelta(days=1)
+
+            formatted = self._format_grouped_by_department(
+                all_docs, from_date_raw, to_date_raw, max_items_per_dept
+            )
+            return [TextContent(type="text", text=formatted)]
+
+        except ValueError as e:
+            return [TextContent(type="text", text=f"Parámetros inválidos: {str(e)}")]
+        except Exception as e:
+            logger.error(f"Error en group_summary_by_department: {e}")
+            return [TextContent(type="text", text=f"Error interno: {str(e)}")]
+
+    def _format_grouped_by_department(
+        self,
+        docs: List[Dict[str, Any]],
+        from_date: str,
+        to_date: str,
+        max_items_per_dept: int
+    ) -> str:
+        """Formatea los documentos agrupados por departamento."""
+        output = [
+            f"# 🏛️ Publicaciones BOE por departamento ({from_date} – {to_date})",
+            "",
+        ]
+
+        if not docs:
+            output.append("No se encontraron publicaciones en el rango especificado.")
+            return "\n".join(output)
+
+        # Agrupar por departamento
+        by_dept: Dict[str, List[Dict]] = {}
+        for doc in docs:
+            dept = doc.get('departamento', 'Sin departamento')
+            by_dept.setdefault(dept, []).append(doc)
+
+        # Ordenar departamentos por número de documentos (descendente)
+        sorted_depts = sorted(by_dept.items(), key=lambda x: len(x[1]), reverse=True)
+
+        output.append(
+            f"**{len(docs)} documentos · {len(sorted_depts)} departamentos**"
+        )
+        output.append("")
+
+        for dept_name, dept_docs in sorted_depts:
+            output.append(f"## {dept_name} ({len(dept_docs)} docs)")
+            output.append("")
+
+            for doc in dept_docs[:max_items_per_dept]:
+                output.append(f"- **{doc['titulo']}**")
+                output.append(f"  - ID: `{doc['identificador']}` · {doc['fecha']}")
+                if doc.get('pdf_url'):
+                    output.append(f"  - PDF: {doc['pdf_url']}")
+                output.append("")
+
+            if len(dept_docs) > max_items_per_dept:
+                output.append(
+                    f"  *(y {len(dept_docs) - max_items_per_dept} más — "
+                    "aumenta max_items_per_dept para ver todos)*"
+                )
+                output.append("")
+
+        return "\n".join(output)

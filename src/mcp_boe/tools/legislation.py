@@ -24,6 +24,9 @@ from ..models.boe_models import (
 
 logger = logging.getLogger(__name__)
 
+# Tipos de bloque que se consideran artículos para compare/search
+_ARTICLE_TIPOS = frozenset({'precepto', 'parte_dispositiva'})
+
 
 class LegislationTools:
     """Herramientas para trabajar con legislación consolidada."""
@@ -186,7 +189,134 @@ class LegislationTools:
                     "required": ["law_id"],
                     "additionalProperties": False
                 }
-            )
+            ),
+            # --- Nuevas tools (grupo A) ---
+            Tool(
+                name="compare_law_versions",
+                description=(
+                    "Compara el texto de una norma entre dos fechas de consolidación distintas, "
+                    "detectando artículos añadidos, modificados o eliminados. "
+                    "Útil para entender qué cambió en una norma a lo largo del tiempo."
+                ),
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "law_id": {
+                            "type": "string",
+                            "pattern": "^BOE-[A-Z]-\\d{4}-\\d{1,5}$",
+                            "description": "Identificador único de la norma (ej: 'BOE-A-2015-10566')"
+                        },
+                        "from_date": {
+                            "type": "string",
+                            "description": "Fecha inicial en formato AAAAMMDD o YYYY-MM-DD (ej: '20200101')"
+                        },
+                        "to_date": {
+                            "type": "string",
+                            "description": "Fecha final en formato AAAAMMDD o YYYY-MM-DD (ej: '20230101')"
+                        },
+                        "granularity": {
+                            "type": "string",
+                            "enum": ["articulo", "capitulo", "titulo"],
+                            "default": "articulo",
+                            "description": "Nivel al que detectar cambios (default: articulo)"
+                        }
+                    },
+                    "required": ["law_id", "from_date", "to_date"],
+                    "additionalProperties": False
+                }
+            ),
+            Tool(
+                name="search_law_articles",
+                description=(
+                    "Busca artículos concretos dentro de una norma que contengan un texto dado, "
+                    "sin necesidad de devolver la norma entera. "
+                    "Devuelve únicamente los artículos que coinciden, con un fragmento del texto relevante."
+                ),
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "law_id": {
+                            "type": "string",
+                            "pattern": "^BOE-[A-Z]-\\d{4}-\\d{1,5}$",
+                            "description": "Identificador único de la norma"
+                        },
+                        "query": {
+                            "type": "string",
+                            "description": "Texto a buscar dentro de los artículos"
+                        },
+                        "search_in": {
+                            "type": "string",
+                            "enum": ["titulo", "texto", "ambos"],
+                            "default": "ambos",
+                            "description": "Dónde buscar: solo en el título del artículo, solo en el texto, o en ambos"
+                        },
+                        "limit": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "maximum": 50,
+                            "default": 20,
+                            "description": "Número máximo de artículos a devolver"
+                        }
+                    },
+                    "required": ["law_id", "query"],
+                    "additionalProperties": False
+                }
+            ),
+            Tool(
+                name="get_law_metadata",
+                description=(
+                    "Obtiene únicamente los metadatos de una norma (rango, fecha, órgano, estado, "
+                    "enlaces) sin cargar el texto completo. Más rápido que get_consolidated_law "
+                    "cuando solo se necesita información descriptiva."
+                ),
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "law_id": {
+                            "type": "string",
+                            "pattern": "^BOE-[A-Z]-\\d{4}-\\d{1,5}$",
+                            "description": "Identificador único de la norma (ej: 'BOE-A-2015-10566')"
+                        }
+                    },
+                    "required": ["law_id"],
+                    "additionalProperties": False
+                }
+            ),
+            Tool(
+                name="list_related_laws",
+                description=(
+                    "Lista las normas relacionadas con una dada, con control granular sobre "
+                    "qué tipos de relaciones incluir (derogaciones, desarrollo reglamentario, "
+                    "referencias genéricas). Complementa a find_related_laws con más opciones de filtrado."
+                ),
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "law_id": {
+                            "type": "string",
+                            "pattern": "^BOE-[A-Z]-\\d{4}-\\d{1,5}$",
+                            "description": "Identificador único de la norma base"
+                        },
+                        "include_derogating": {
+                            "type": "boolean",
+                            "default": True,
+                            "description": "Incluir relaciones de derogación"
+                        },
+                        "include_development": {
+                            "type": "boolean",
+                            "default": True,
+                            "description": "Incluir relaciones de desarrollo reglamentario"
+                        },
+                        "include_references": {
+                            "type": "boolean",
+                            "default": True,
+                            "description": "Incluir otras referencias"
+                        }
+                    },
+                    "required": ["law_id"],
+                    "additionalProperties": False
+                }
+            ),
         ]
 
     async def search_consolidated_legislation(self, arguments: Dict[str, Any]) -> List[TextContent]:
@@ -1073,5 +1203,513 @@ class LegislationTools:
 
         output.append("---")
         output.append("💡 Use `get_consolidated_law` con cualquiera de los IDs mostrados para obtener más información sobre esas normas.")
-        
+
+        return "\n".join(output)
+
+    # =========================================================================
+    # compare_law_versions
+    # =========================================================================
+
+    async def compare_law_versions(self, arguments: Dict[str, Any]) -> List[TextContent]:
+        """Compara el texto de una norma entre dos fechas de consolidación.
+
+        Usa el historial de versiones de cada TextBlock para reconstruir el texto
+        vigente en cada fecha y detectar diferencias.
+
+        Args:
+            arguments: Diccionario con law_id, from_date, to_date y granularity.
+
+        Returns:
+            TextContent con los cambios detectados en formato markdown.
+        """
+        try:
+            law_id = arguments['law_id']
+            from_date_raw = arguments['from_date']
+            to_date_raw = arguments['to_date']
+            granularity = arguments.get('granularity', 'articulo')
+
+            if not validate_boe_identifier(law_id):
+                raise ValueError(f"Identificador de norma inválido: {law_id}")
+
+            from_date = format_date_for_api(from_date_raw)
+            to_date = format_date_for_api(to_date_raw)
+
+            if from_date >= to_date:
+                raise ValueError(f"from_date ({from_date}) debe ser anterior a to_date ({to_date})")
+
+            logger.info(f"Comparando versiones de {law_id}: {from_date} → {to_date}, granularidad={granularity}")
+
+            response = await self.client.get_law_by_id(law_id, 'texto')
+
+            if not response.get('data'):
+                return [TextContent(
+                    type="text",
+                    text=f"No se encontró texto para la norma {law_id}."
+                )]
+
+            bloques = response['data'].get('texto', [])
+            if not isinstance(bloques, list):
+                bloques = [bloques] if bloques else []
+
+            changes = self._detect_version_changes(bloques, from_date, to_date, granularity)
+            formatted = self._format_version_comparison(changes, law_id, from_date_raw, to_date_raw)
+            return [TextContent(type="text", text=formatted)]
+
+        except APIError as e:
+            logger.error(f"Error de API comparando versiones de {law_id}: {e}")
+            return [TextContent(type="text", text=f"Error accediendo a la norma {law_id}: {e.mensaje}")]
+        except Exception as e:
+            logger.error(f"Error inesperado comparando versiones: {e}")
+            return [TextContent(type="text", text=f"Error interno: {str(e)}")]
+
+    def _get_active_version(self, versiones: List[Dict[str, Any]], target_date: str) -> Optional[Dict[str, Any]]:
+        """Devuelve la versión activa de un bloque en una fecha dada.
+
+        La versión activa es la de mayor fecha_vigencia que sea <= target_date.
+        """
+        candidates = []
+        for v in versiones:
+            fv = v.get('fecha_vigencia') or v.get('fecha_publicacion', '')
+            if fv and fv <= target_date:
+                candidates.append((fv, v))
+        if not candidates:
+            return None
+        # La más reciente que no supera target_date
+        candidates.sort(key=lambda x: x[0], reverse=True)
+        return candidates[0][1]
+
+    def _detect_version_changes(
+        self,
+        bloques: List[Dict[str, Any]],
+        from_date: str,
+        to_date: str,
+        granularity: str
+    ) -> List[Dict[str, Any]]:
+        """Detecta cambios en los bloques entre dos fechas."""
+        changes = []
+
+        for bloque in bloques:
+            tipo = bloque.get('tipo', '')
+            block_id = bloque.get('id', 'N/A')
+            titulo = bloque.get('titulo', 'Sin título')
+
+            # Filtrar según granularidad
+            if granularity == 'articulo' and tipo not in _ARTICLE_TIPOS:
+                continue
+
+            versiones = bloque.get('versiones', [])
+            if not isinstance(versiones, list):
+                versiones = [versiones] if versiones else []
+
+            v_from = self._get_active_version(versiones, from_date)
+            v_to = self._get_active_version(versiones, to_date)
+
+            old_text = self._clean_html_content(v_from.get('contenido_html', '')) if v_from else None
+            new_text = self._clean_html_content(v_to.get('contenido_html', '')) if v_to else None
+
+            if v_from is None and v_to is not None:
+                changes.append({
+                    'unit_type': tipo,
+                    'unit_id': block_id,
+                    'unit_title': titulo,
+                    'change_type': 'added',
+                    'old_text': None,
+                    'new_text': new_text,
+                })
+            elif v_from is not None and v_to is None:
+                changes.append({
+                    'unit_type': tipo,
+                    'unit_id': block_id,
+                    'unit_title': titulo,
+                    'change_type': 'removed',
+                    'old_text': old_text,
+                    'new_text': None,
+                })
+            elif v_from and v_to:
+                old_html = v_from.get('contenido_html', '')
+                new_html = v_to.get('contenido_html', '')
+                # Detectar cambio real: comparar norma modificadora o contenido
+                id_from = v_from.get('id_norma', '')
+                id_to = v_to.get('id_norma', '')
+                if id_from != id_to or old_html != new_html:
+                    changes.append({
+                        'unit_type': tipo,
+                        'unit_id': block_id,
+                        'unit_title': titulo,
+                        'change_type': 'modified',
+                        'old_text': old_text,
+                        'new_text': new_text,
+                    })
+
+        return changes
+
+    def _format_version_comparison(
+        self,
+        changes: List[Dict[str, Any]],
+        law_id: str,
+        from_date: str,
+        to_date: str
+    ) -> str:
+        """Formatea el resultado de la comparación de versiones."""
+        output = [
+            f"# 🔄 Comparación de versiones: `{law_id}`",
+            f"**Desde:** {from_date} → **Hasta:** {to_date}",
+            "",
+        ]
+
+        if not changes:
+            output.append("✅ **Sin cambios detectados** entre las dos fechas para los bloques analizados.")
+            output.append("")
+            output.append(
+                "Nota: esto puede ocurrir si la norma no fue modificada entre esas fechas, "
+                "o si ninguna versión con esas fechas de vigencia está disponible en el BOE."
+            )
+            return "\n".join(output)
+
+        added = [c for c in changes if c['change_type'] == 'added']
+        modified = [c for c in changes if c['change_type'] == 'modified']
+        removed = [c for c in changes if c['change_type'] == 'removed']
+
+        output.append(
+            f"**Resumen:** {len(added)} añadidos · {len(modified)} modificados · {len(removed)} eliminados"
+        )
+        output.append("")
+
+        if added:
+            output.append("## ✅ Bloques añadidos")
+            for c in added:
+                output.append(f"### `{c['unit_id']}` — {c['unit_title']}")
+                if c['new_text']:
+                    snippet = c['new_text'][:300] + ('…' if len(c['new_text']) > 300 else '')
+                    output.append(f"> {snippet}")
+                output.append("")
+
+        if modified:
+            output.append("## ✏️ Bloques modificados")
+            for c in modified:
+                output.append(f"### `{c['unit_id']}` — {c['unit_title']}")
+                if c['old_text']:
+                    old_snippet = c['old_text'][:200] + ('…' if len(c['old_text']) > 200 else '')
+                    output.append(f"**Antes:** {old_snippet}")
+                if c['new_text']:
+                    new_snippet = c['new_text'][:200] + ('…' if len(c['new_text']) > 200 else '')
+                    output.append(f"**Después:** {new_snippet}")
+                output.append("")
+
+        if removed:
+            output.append("## ❌ Bloques eliminados")
+            for c in removed:
+                output.append(f"### `{c['unit_id']}` — {c['unit_title']}")
+                if c['old_text']:
+                    snippet = c['old_text'][:300] + ('…' if len(c['old_text']) > 300 else '')
+                    output.append(f"> {snippet}")
+                output.append("")
+
+        output.append("---")
+        output.append(
+            "💡 Usa `get_law_text_block` con cualquiera de los IDs anteriores para leer el bloque completo."
+        )
+        return "\n".join(output)
+
+    # =========================================================================
+    # search_law_articles
+    # =========================================================================
+
+    async def search_law_articles(self, arguments: Dict[str, Any]) -> List[TextContent]:
+        """Busca artículos dentro de una norma que contengan un texto dado.
+
+        Args:
+            arguments: Diccionario con law_id, query, search_in y limit.
+
+        Returns:
+            TextContent con los artículos que coinciden y sus fragmentos relevantes.
+        """
+        try:
+            law_id = arguments['law_id']
+            query = arguments['query']
+            search_in = arguments.get('search_in', 'ambos')
+            limit = arguments.get('limit', 20)
+
+            if not validate_boe_identifier(law_id):
+                raise ValueError(f"Identificador de norma inválido: {law_id}")
+            if not query.strip():
+                raise ValueError("El parámetro 'query' no puede estar vacío.")
+
+            logger.info(f"Buscando '{query}' en artículos de {law_id}, search_in={search_in}")
+
+            response = await self.client.get_law_by_id(law_id, 'texto')
+
+            if not response.get('data'):
+                return [TextContent(type="text", text=f"No se encontró texto para la norma {law_id}.")]
+
+            bloques = response['data'].get('texto', [])
+            if not isinstance(bloques, list):
+                bloques = [bloques] if bloques else []
+
+            matches = self._search_in_blocks(bloques, query, search_in, limit)
+            formatted = self._format_article_search(matches, law_id, query)
+            return [TextContent(type="text", text=formatted)]
+
+        except APIError as e:
+            logger.error(f"Error de API buscando en artículos de {law_id}: {e}")
+            return [TextContent(type="text", text=f"Error accediendo a la norma {law_id}: {e.mensaje}")]
+        except Exception as e:
+            logger.error(f"Error inesperado buscando artículos: {e}")
+            return [TextContent(type="text", text=f"Error interno: {str(e)}")]
+
+    def _search_in_blocks(
+        self,
+        bloques: List[Dict[str, Any]],
+        query: str,
+        search_in: str,
+        limit: int
+    ) -> List[Dict[str, Any]]:
+        """Busca el query en los bloques de tipo precepto."""
+        query_lower = query.lower()
+        matches = []
+
+        for bloque in bloques:
+            if bloque.get('tipo') not in _ARTICLE_TIPOS:
+                continue
+
+            block_id = bloque.get('id', 'N/A')
+            titulo = bloque.get('titulo', '')
+
+            versiones = bloque.get('versiones', [])
+            if not isinstance(versiones, list):
+                versiones = [versiones] if versiones else []
+
+            html = versiones[0].get('contenido_html', '') if versiones else ''
+            plain_text = self._clean_html_content(html)
+
+            found_in_title = (search_in in ('titulo', 'ambos')) and query_lower in titulo.lower()
+            found_in_text = (search_in in ('texto', 'ambos')) and query_lower in plain_text.lower()
+
+            if not (found_in_title or found_in_text):
+                continue
+
+            # Construir snippet con contexto
+            snippet = self._build_snippet(plain_text, query_lower)
+
+            matches.append({
+                'article_id': block_id,
+                'title': titulo,
+                'snippet': snippet,
+                'full_text': plain_text if len(plain_text) <= 500 else None,
+            })
+
+            if len(matches) >= limit:
+                break
+
+        return matches
+
+    def _build_snippet(self, text: str, query_lower: str, context: int = 100) -> str:
+        """Construye un fragmento de texto alrededor de la primera coincidencia."""
+        pos = text.lower().find(query_lower)
+        if pos < 0:
+            return text[:200] + ('…' if len(text) > 200 else '')
+
+        start = max(0, pos - context)
+        end = min(len(text), pos + len(query_lower) + context)
+        snippet = text[start:end]
+        if start > 0:
+            snippet = '…' + snippet
+        if end < len(text):
+            snippet += '…'
+        return snippet
+
+    def _format_article_search(
+        self,
+        matches: List[Dict[str, Any]],
+        law_id: str,
+        query: str
+    ) -> str:
+        """Formatea los resultados de búsqueda de artículos."""
+        output = [
+            f"# 🔍 Búsqueda en artículos de `{law_id}`",
+            f"**Query:** «{query}»",
+            "",
+        ]
+
+        if not matches:
+            output.append(f"No se encontraron artículos que contengan «{query}» en esta norma.")
+            return "\n".join(output)
+
+        output.append(f"**{len(matches)} artículo(s) encontrado(s):**")
+        output.append("")
+
+        for m in matches:
+            output.append(f"### `{m['article_id']}` — {m['title']}")
+            output.append(f"> {m['snippet']}")
+            output.append("")
+
+        output.append("---")
+        output.append("💡 Usa `get_law_text_block` con cualquiera de los IDs para leer el artículo completo.")
+        return "\n".join(output)
+
+    # =========================================================================
+    # get_law_metadata
+    # =========================================================================
+
+    async def get_law_metadata(self, arguments: Dict[str, Any]) -> List[TextContent]:
+        """Obtiene únicamente los metadatos de una norma, sin cargar el texto.
+
+        Args:
+            arguments: Diccionario con law_id.
+
+        Returns:
+            TextContent con los metadatos estructurados.
+        """
+        try:
+            law_id = arguments['law_id']
+
+            if not validate_boe_identifier(law_id):
+                raise ValueError(f"Identificador de norma inválido: {law_id}")
+
+            logger.info(f"Obteniendo metadatos de norma {law_id}")
+
+            response = await self.client.get_law_by_id(law_id, 'metadatos')
+
+            if not response.get('data'):
+                return [TextContent(type="text", text=f"No se encontraron metadatos para la norma {law_id}.")]
+
+            formatted = self._format_law_metadata(response['data'])
+            return [TextContent(type="text", text=formatted)]
+
+        except APIError as e:
+            logger.error(f"Error de API obteniendo metadatos de {law_id}: {e}")
+            return [TextContent(type="text", text=f"Error accediendo a la norma {law_id}: {e.mensaje}")]
+        except Exception as e:
+            logger.error(f"Error inesperado obteniendo metadatos: {e}")
+            return [TextContent(type="text", text=f"Error interno: {str(e)}")]
+
+    # =========================================================================
+    # list_related_laws
+    # =========================================================================
+
+    async def list_related_laws(self, arguments: Dict[str, Any]) -> List[TextContent]:
+        """Lista normas relacionadas con control granular sobre los tipos de relación.
+
+        A diferencia de find_related_laws (que filtra por tipo único), esta tool
+        acepta flags booleanos para cada categoría de relación.
+
+        Args:
+            arguments: Diccionario con law_id y flags include_*.
+
+        Returns:
+            TextContent con las relaciones agrupadas por categoría.
+        """
+        try:
+            law_id = arguments['law_id']
+            include_derogating = arguments.get('include_derogating', True)
+            include_development = arguments.get('include_development', True)
+            include_references = arguments.get('include_references', True)
+
+            if not validate_boe_identifier(law_id):
+                raise ValueError(f"Identificador de norma inválido: {law_id}")
+
+            logger.info(
+                f"Listando normas relacionadas con {law_id}: "
+                f"derogating={include_derogating}, development={include_development}, "
+                f"references={include_references}"
+            )
+
+            response = await self.client.get_law_by_id(law_id, 'analisis')
+
+            if not response.get('data'):
+                return [TextContent(type="text", text=f"No se encontró análisis para la norma {law_id}.")]
+
+            analysis_data = response['data']
+            formatted = self._format_related_laws(
+                analysis_data, law_id,
+                include_derogating, include_development, include_references
+            )
+            return [TextContent(type="text", text=formatted)]
+
+        except APIError as e:
+            logger.error(f"Error de API listando relaciones de {law_id}: {e}")
+            return [TextContent(type="text", text=f"Error accediendo a la norma {law_id}: {e.mensaje}")]
+        except Exception as e:
+            logger.error(f"Error inesperado listando relaciones: {e}")
+            return [TextContent(type="text", text=f"Error interno: {str(e)}")]
+
+    def _classify_relation(self, rel_text: str) -> str:
+        """Clasifica una relación en derogating, development o reference."""
+        upper = rel_text.upper()
+        if any(kw in upper for kw in ('DEROGA', 'ANULA', 'SUPRIME')):
+            return 'derogating'
+        if any(kw in upper for kw in ('DESARROLLA', 'COMPLEMENTA', 'EJECUTA', 'APLICA')):
+            return 'development'
+        return 'reference'
+
+    def _format_related_laws(
+        self,
+        analysis_data: Dict[str, Any],
+        law_id: str,
+        include_derogating: bool,
+        include_development: bool,
+        include_references: bool
+    ) -> str:
+        """Formatea las relaciones de la norma agrupadas por categoría."""
+        output = [f"# 🔗 Normas relacionadas con `{law_id}`", ""]
+
+        referencias = analysis_data.get('referencias', {})
+        anteriores = referencias.get('anteriores', [])
+        posteriores = referencias.get('posteriores', [])
+
+        all_refs = [
+            {'dir': 'anterior', **ref} for ref in anteriores
+        ] + [
+            {'dir': 'posterior', **ref} for ref in posteriores
+        ]
+
+        if not all_refs:
+            output.append(f"No se encontraron normas relacionadas con `{law_id}`.")
+            return "\n".join(output)
+
+        # Clasificar
+        groups: Dict[str, List[Dict]] = {'derogating': [], 'development': [], 'reference': []}
+        for ref in all_refs:
+            relacion = ref.get('relacion', {})
+            rel_text = relacion.get('texto', '') if isinstance(relacion, dict) else str(relacion)
+            cat = self._classify_relation(rel_text)
+            groups[cat].append(ref)
+
+        total_shown = 0
+
+        def _render_group(label: str, refs: List[Dict]) -> None:
+            nonlocal total_shown
+            if not refs:
+                return
+            output.append(f"## {label} ({len(refs)})")
+            output.append("")
+            for ref in refs:
+                id_norma = ref.get('id_norma', 'N/A')
+                relacion = ref.get('relacion', {})
+                rel_text = relacion.get('texto', 'Relacionada') if isinstance(relacion, dict) else str(relacion)
+                desc = ref.get('texto', '')
+                dir_arrow = "← afecta a esta norma" if ref.get('dir') == 'posterior' else "→ afecta a norma anterior"
+                output.append(f"- **`{id_norma}`** — {rel_text}")
+                if desc:
+                    output.append(f"  - {desc}")
+                output.append(f"  - *{dir_arrow}*")
+                output.append("")
+                total_shown += 1
+
+        if include_derogating:
+            _render_group("🚫 Derogación / Anulación", groups['derogating'])
+        if include_development:
+            _render_group("📋 Desarrollo reglamentario", groups['development'])
+        if include_references:
+            _render_group("🔗 Otras referencias", groups['reference'])
+
+        if total_shown == 0:
+            output.append("No se encontraron relaciones para los filtros seleccionados.")
+        else:
+            output.append("---")
+            output.append(
+                f"**Total:** {total_shown} relación(es) mostrada(s). "
+                "Usa `get_consolidated_law` con cualquier ID para obtener más detalles."
+            )
+
         return "\n".join(output)
