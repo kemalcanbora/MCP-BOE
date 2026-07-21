@@ -7,6 +7,7 @@ y obtener información sobre legislación española consolidada.
 
 import json
 import logging
+import re
 from typing import Dict, Any, List, Optional, Union
 from datetime import datetime
 
@@ -347,6 +348,16 @@ class LegislationTools:
                 raise ValueError(f"Formato de fecha inválido: {from_date}")
             if to_date and not validate_date_format(to_date):
                 raise ValueError(f"Formato de fecha inválido: {to_date}")
+
+            # Atajo para normas conocidas: si la query contiene un patrón tipo
+            # "40/2015" (número/año), es casi seguro que el usuario busca una
+            # norma concreta por su designación. Reforzamos la búsqueda por
+            # título para que caiga exactamente en esa norma en lugar de
+            # dispersarse por el texto de miles de normas que la citan.
+            if query and not title:
+                m = re.search(r'\b(\d{1,4})\s*/\s*(\d{4})\b', query)
+                if m:
+                    title = f"{m.group(1)}/{m.group(2)}"
 
             # Construir query estructurada
             search_query = self.client.build_search_query(
